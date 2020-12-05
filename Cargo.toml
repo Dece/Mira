@@ -1,0 +1,9 @@
+[package]
+name = "mira"
+version = "0.1.0"
+authors = ["dece <shgck@pistache.land>"]
+edition = "2018"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
