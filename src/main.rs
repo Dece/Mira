@@ -4,6 +4,8 @@ use std::io::prelude::*;
 use std::path;
 use std::process;
 
+const MIRROR_REMOTE_NAME: &str = "mirror";
+
 fn main() {
     let config_text = match load_file(&path::Path::new("mira.json")) {
         Ok(content) => content,
@@ -27,14 +29,7 @@ fn load_file(path: &path::Path) -> Result<String, io::Error> {
 #[derive(Debug, serde::Deserialize)]
 struct RootConfig {
     workspace: String,
-    auth: serde_json::Value,
     configurations: Vec<Configuration>,
-}
-
-/// Authentication options, unused at the moment.
-#[derive(Debug, serde::Deserialize)]
-struct Authentication {
-    key: Option<String>,
 }
 
 /// Server configuration.
@@ -77,6 +72,7 @@ fn process_root_config(root_config: &RootConfig) -> bool {
 enum MirrorResult {
     Success,
     CloneFailed,
+    FetchFailed,
     RemotesError,
     PushFailed,
 }
@@ -101,6 +97,10 @@ fn process_config(config: &Configuration, workspace: &path::Path) -> Result<bool
             Ok(MirrorResult::Success) => { println!("{} mirrored successfully.", mirror.name); },
             Ok(MirrorResult::CloneFailed) => {
                 println!("Failed to clone {}.", mirror.name);
+                complete_success = false;
+            },
+            Ok(MirrorResult::FetchFailed) => {
+                println!("Failed to fetch changes for {}.", mirror.name);
                 complete_success = false;
             },
             Ok(MirrorResult::RemotesError) => {
@@ -132,10 +132,14 @@ fn mirror_repo(
 ) -> Result<MirrorResult, io::Error> {
     let mut repo_path = path.to_path_buf();
     repo_path.push(name);
-    // Ensure the repository is cloned.
+    // Ensure the repository is cloned and up to date.
     if !repo_path.exists() {
         if !clone(src_url, path, name) {
             return Ok(MirrorResult::CloneFailed)
+        }
+    } else {
+        if !fetch(&repo_path) {
+            return Ok(MirrorResult::FetchFailed)
         }
     }
     // Ensure the mirror remote is available.
@@ -143,8 +147,13 @@ fn mirror_repo(
         Some(remotes) => remotes,
         None => return Ok(MirrorResult::RemotesError)
     };
+    if !remotes.contains(&MIRROR_REMOTE_NAME.to_string()) {
+        if !add_mirror_remote(&repo_path, dest_url) {
+            return Ok(MirrorResult::RemotesError)
+        }
+    }
     // Push to the mirror repo.
-    if !push(&repo_path, dest_url) {
+    if !push(&repo_path) {
         return Ok(MirrorResult::PushFailed)
     }
     Ok(MirrorResult::Success)
@@ -152,22 +161,37 @@ fn mirror_repo(
 
 /// Run a git mirror clone command.
 fn clone(url: &str, path: &path::Path, name: &str) -> bool {
-    let (success, _) = run_git_command_in(vec!("clone", "--mirror", url, name), path);
+    let args = vec!("clone", "--mirror", url, name);
+    let (success, _) = run_git_command_in(args, path);
+    success
+}
+
+/// Update a local repository.
+fn fetch(path: &path::Path) -> bool {
+    let (success, _) = run_git_command_in(vec!("fetch"), path);
     success
 }
 
 /// Return a vector of remote names on success.
 fn get_remotes(path: &path::Path) -> Option<Vec<String>> {
     let (success, stdout) = run_git_command_in(vec!("remote"), path);
-    if !success || stdout.is_none() {
+    if !success {
         return None
     }
-    Some(stdout.unwrap().split_whitespace().map(|s| s.to_string()).collect())
+    stdout.and_then(|s| Some(s.split_whitespace().map(|ss| ss.to_string()).collect()))
+}
+
+/// Set the mirror remote `url` in the repository at `path`.
+fn add_mirror_remote(path: &path::Path, url: &str) -> bool {
+    let args = vec!("remote", "add", MIRROR_REMOTE_NAME, url);
+    let (success, _) = run_git_command_in(args, path);
+    success
 }
 
 /// Run a git mirror push command.
-fn push(path: &path::Path, url: &str) -> bool {
-    let (success, _) = run_git_command_in(vec!("push", "--mirror", url), path);
+fn push(path: &path::Path) -> bool {
+    let args = vec!("push", "--mirror", MIRROR_REMOTE_NAME);
+    let (success, _) = run_git_command_in(args, path);
     success
 }
 
