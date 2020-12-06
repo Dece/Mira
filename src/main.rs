@@ -1,3 +1,5 @@
+//! Mira -- Git mirrors from a JSON config file.
+
 use std::fs;
 use std::io;
 use std::io::prelude::*;
@@ -7,7 +9,13 @@ use std::process;
 const MIRROR_REMOTE_NAME: &str = "mirror";
 
 fn main() {
-    let config_text = match load_file(&path::Path::new("mira.json")) {
+    let matches = clap::App::new("Mira")
+        .setting(clap::AppSettings::ArgRequiredElseHelp)
+        .arg(clap::Arg::with_name("config")
+             .short("c").long("config").takes_value(true).required(true))
+        .get_matches();
+    let config_file = matches.value_of("config").unwrap();
+    let config_text = match load_file(&path::Path::new(config_file)) {
         Ok(content) => content,
         Err(e) => { eprintln!("{:?}", e); process::exit(1) }
     };
