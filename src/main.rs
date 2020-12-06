@@ -134,12 +134,12 @@ fn mirror_repo(
     repo_path.push(name);
     // Ensure the repository is cloned and up to date.
     if !repo_path.exists() {
-        if !clone(src_url, path, name) {
-            return Ok(MirrorResult::CloneFailed)
+        if let Some(e) = check_git_return(&clone(src_url, path, name), MirrorResult::CloneFailed) {
+            return Ok(e)
         }
     } else {
-        if !fetch(&repo_path) {
-            return Ok(MirrorResult::FetchFailed)
+        if let Some(e) = check_git_return(&fetch(&repo_path), MirrorResult::FetchFailed) {
+            return Ok(e)
         }
     }
     // Ensure the mirror remote is available.
@@ -148,28 +148,48 @@ fn mirror_repo(
         None => return Ok(MirrorResult::RemotesError)
     };
     if !remotes.contains(&MIRROR_REMOTE_NAME.to_string()) {
-        if !add_mirror_remote(&repo_path, dest_url) {
-            return Ok(MirrorResult::RemotesError)
+        if let Some(e) = check_git_return(
+            &add_mirror_remote(&repo_path, dest_url),
+            MirrorResult::RemotesError
+        ) {
+            return Ok(e)
         }
     }
     // Push to the mirror repo.
-    if !push(&repo_path) {
-        return Ok(MirrorResult::PushFailed)
+    if let Some(e) = check_git_return(&push(&repo_path), MirrorResult::PushFailed) {
+        return Ok(e)
     }
     Ok(MirrorResult::Success)
 }
 
+/// Common type for wrappers around Git commands: success and optional stdout.
+type GitCmdReturn = (bool, Option<String>);
+
+/// Check a GitCmdReturn.
+///
+/// Print errors if the command failed and return `Some(on_error)`, or return None if the command
+/// completed successfully.
+fn check_git_return(cmd_return: &GitCmdReturn, on_error: MirrorResult) -> Option<MirrorResult> {
+    match cmd_return {
+        (false, output_opt) => {
+            if let Some(output) = output_opt {
+                eprintln!("Git output:\n{}", output);
+            }
+            Some(on_error)
+        }
+        _ => None
+    }
+}
+
 /// Run a git mirror clone command.
-fn clone(url: &str, path: &path::Path, name: &str) -> bool {
+fn clone(url: &str, path: &path::Path, name: &str) -> GitCmdReturn {
     let args = vec!("clone", "--mirror", url, name);
-    let (success, _) = run_git_command_in(args, path);
-    success
+    run_git_command_in(args, path)
 }
 
 /// Update a local repository.
-fn fetch(path: &path::Path) -> bool {
-    let (success, _) = run_git_command_in(vec!("fetch"), path);
-    success
+fn fetch(path: &path::Path) -> GitCmdReturn {
+    run_git_command_in(vec!("fetch"), path)
 }
 
 /// Return a vector of remote names on success.
@@ -182,35 +202,35 @@ fn get_remotes(path: &path::Path) -> Option<Vec<String>> {
 }
 
 /// Set the mirror remote `url` in the repository at `path`.
-fn add_mirror_remote(path: &path::Path, url: &str) -> bool {
+fn add_mirror_remote(path: &path::Path, url: &str) -> GitCmdReturn {
     let args = vec!("remote", "add", MIRROR_REMOTE_NAME, url);
-    let (success, _) = run_git_command_in(args, path);
-    success
+    run_git_command_in(args, path)
 }
 
 /// Run a git mirror push command.
-fn push(path: &path::Path) -> bool {
+fn push(path: &path::Path) -> GitCmdReturn {
     let args = vec!("push", "--mirror", MIRROR_REMOTE_NAME);
-    let (success, _) = run_git_command_in(args, path);
-    success
+    run_git_command_in(args, path)
 }
 
 /// Run a git command with supplied arguments, return true on successful completion.
-fn run_git_command(args: Vec<&str>) -> (bool, Option<String>) {
+fn run_git_command(args: Vec<&str>) -> GitCmdReturn {
     let mut command = process::Command::new("git");
     command.args(&args);
     match command.output() {
         Ok(output) => {
             let success = output.status.success();
-            let stdout = String::from_utf8(output.stdout).ok();
-            (success, stdout)
+            let text = String::from_utf8(
+                if success { output.stdout } else { output.stderr }
+            ).ok();
+            (success, text)
         }
         Err(e) => { eprintln!("Failed to run Git: {}", e); (false, None) }
     }
 }
 
 /// Call `run_git_command` but with a work directory specified.
-fn run_git_command_in(args: Vec<&str>, path: &path::Path) -> (bool, Option<String>) {
+fn run_git_command_in(args: Vec<&str>, path: &path::Path) -> GitCmdReturn {
     let path = match path.to_str() {
         Some(path) => path,
         None => { eprintln!("Invalid path: {:?}", path); return (false, None) }
